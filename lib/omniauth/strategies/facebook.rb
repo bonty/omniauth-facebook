@@ -8,6 +8,7 @@ module OmniAuth
   module Strategies
     class Facebook < OmniAuth::Strategies::OAuth2
       class NoAuthorizationCodeError < StandardError; end
+      class InvalidAccessTokenError < StandardError; end
 
       DEFAULT_SCOPE = 'email'
 
@@ -73,6 +74,8 @@ module OmniAuth
         end
       rescue NoAuthorizationCodeError => e
         fail!(:no_authorization_code, e)
+      rescue InvalidAccessTokenError => e
+        fail!(:invalid_access_token, e)
       rescue OmniAuth::Facebook::SignedRequest::UnknownSignatureAlgorithmError => e
         fail!(:unknown_signature_algorithm, e)
       end
@@ -141,17 +144,16 @@ module OmniAuth
       def verify_access_token!(access_token)
         token_info = access_token.get('/debug_token', params: { input_token: access_token.token, access_token: app_access_token})
         token_data = token_info.parsed.fetch('data', {})
-
-        raise 'invalid token' unless token_data['is_valid']
-        raise 'invalid app_id' unless token_data['app_id'] == client.id
-        raise 'invalid user_id' unless token_data['user_id'] == request.params['uid']
-
-        missing_scopes = authorize_params.scope.split(',').collect(&:strip) - token_data.fetch('scopes', [])
-        raise "missing scopes #{missing_scopes.join(', ')}" if missing_scopes.any?
+        raise InvalidAccessTokenError, 'invalid token' unless valid_access_token?(token_data)
       end
 
       def app_access_token
         "%s|%s" % [client.id, client.secret]
+      end
+
+      def valid_access_token?(token_data)
+        missing_scopes = authorize_params.scope.split(',').collect(&:strip) - token_data.fetch('scopes', [])
+        token_data['is_valid'] && token_data['app_id'] == client.id && token_data['user_id'] == request.params['uid'] && missing_scopes.none?
       end
 
       def access_token_authentication?
