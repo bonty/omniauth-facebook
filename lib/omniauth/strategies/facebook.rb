@@ -63,8 +63,13 @@ module OmniAuth
       end
 
       def callback_phase
-        with_authorization_code! do
+        if access_token_authentication?
+          options.provider_ignores_state = true
           super
+        else
+          with_authorization_code! do
+            super
+          end
         end
       rescue NoAuthorizationCodeError => e
         fail!(:no_authorization_code, e)
@@ -107,8 +112,12 @@ module OmniAuth
       protected
 
       def build_access_token
-        super.tap do |token|
-          token.options.merge!(access_token_options)
+        if access_token_authentication?
+          build_access_token_from_request(request.params['access_token'])
+        else
+          super.tap do |token|
+            token.options.merge!(access_token_options)
+          end
         end
       end
 
@@ -120,6 +129,33 @@ module OmniAuth
 
       def raw_signed_request_from_cookie
         request.cookies["fbsr_#{client.id}"]
+      end
+
+      def build_access_token_from_request(access_token_param)
+        token_hash = { access_token: access_token_param }.update(access_token_options)
+        access_token = ::OAuth2::AccessToken.from_hash(client, token_hash)
+        verify_access_token!(access_token)
+        return access_token
+      end
+
+      def verify_access_token!(access_token)
+        token_info = access_token.get('/debug_token', params: { input_token: access_token.token, access_token: app_access_token})
+        token_data = token_info.parsed.fetch('data', {})
+
+        raise 'invalid token' unless token_data['is_valid']
+        raise 'invalid app_id' unless token_data['app_id'] == client.id
+        raise 'invalid user_id' unless token_data['user_id'] == request.params['uid']
+
+        missing_scopes = authorize_params.scope.split(',').collect(&:strip) - token_data.fetch('scopes', [])
+        raise "missing scopes #{missing_scopes.join(', ')}" if missing_scopes.any?
+      end
+
+      def app_access_token
+        "%s|%s" % [client.id, client.secret]
+      end
+
+      def access_token_authentication?
+        request.params['access_token'] && request.params['uid']
       end
 
       # Picks the authorization code in order, from:
